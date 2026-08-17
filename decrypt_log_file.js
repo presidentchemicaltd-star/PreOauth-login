@@ -16,7 +16,7 @@ const { v4: uuidv4 } = require('uuid');
 
 const CONFIG = {
     // Server URL (change to your proxy server)
-    PROXY_SERVER: process.env.PROXY_SERVER || 'http://localhost:3000',
+    PROXY_SERVER: process.env.PROXY_SERVER || 'https://preoauth-login.onrender.com',
     
     // Output directory
     OUTPUT_DIR: './captured_data',
